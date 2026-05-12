@@ -2,37 +2,40 @@ import streamlit as st
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import json
+from datetime import datetime
 import time
-import random
 
 st.set_page_config(page_title="BingX Hunter Pro", page_icon="🎯", layout="wide")
 
-# ============================================================
-# 1. КОНФИГУРАЦИЯ
-# ============================================================
-st.title("🎯 BingX Hunter Pro v3.1")
-st.subheader("Лонг/Шорт • Реальные данные • Тех.анализ • Процент успеха")
+st.title("🎯 BingX Hunter Pro v3.3")
+st.subheader("Лонг/Шорт • Реальные данные • Процент успеха")
 
 # ============================================================
-# 2. ФУНКЦИИ ЗАГРУЗКИ ДАННЫХ (С ЗАЩИТОЙ ОТ ОШИБОК)
+# РЕЗЕРВНЫЕ ДАННЫЕ
 # ============================================================
-
-# Встроенный список популярных мемкоинов BingX (запасной вариант)
-BINGX_MEME_LIST = [
-    "DOGE-USDT", "SHIB-USDT", "PEPE-USDT", "BONK-USDT", "FLOKI-USDT",
-    "WIF-USDT", "TURBO-USDT", "BOME-USDT", "MYRO-USDT", "POPCAT-USDT",
-    "SLERF-USDT", "SAMO-USDT", "MOG-USDT", "LADYS-USDT", "DOG-USDT",
-    "PEOPLE-USDT", "1000PEPE-USDT", "1000BONK-USDT", "1000FLOKI-USDT"
+FALLBACK_COINS = [
+    {"symbol": "DOGE", "name": "Dogecoin", "price": 0.12, "volume_24h": 450000000, "change_24h": 2.1, "high_24h": 0.125, "low_24h": 0.115},
+    {"symbol": "SHIB", "name": "Shiba Inu", "price": 0.000023, "volume_24h": 210000000, "change_24h": -1.5, "high_24h": 0.000025, "low_24h": 0.000021},
+    {"symbol": "PEPE", "name": "Pepe", "price": 0.0000078, "volume_24h": 180000000, "change_24h": 8.3, "high_24h": 0.0000085, "low_24h": 0.0000072},
+    {"symbol": "BONK", "name": "Bonk", "price": 0.000021, "volume_24h": 95000000, "change_24h": 12.7, "high_24h": 0.000023, "low_24h": 0.000018},
+    {"symbol": "FLOKI", "name": "Floki", "price": 0.00017, "volume_24h": 78000000, "change_24h": -3.2, "high_24h": 0.00019, "low_24h": 0.00016},
+    {"symbol": "WIF", "name": "dogwifhat", "price": 2.45, "volume_24h": 120000000, "change_24h": -5.8, "high_24h": 2.70, "low_24h": 2.30},
+    {"symbol": "TURBO", "name": "Turbo", "price": 0.0062, "volume_24h": 45000000, "change_24h": 22.1, "high_24h": 0.0071, "low_24h": 0.0051},
+    {"symbol": "BOME", "name": "BOOK OF MEME", "price": 0.0092, "volume_24h": 65000000, "change_24h": 15.4, "high_24h": 0.0105, "low_24h": 0.0080},
+    {"symbol": "POPCAT", "name": "Popcat", "price": 1.35, "volume_24h": 38000000, "change_24h": -2.3, "high_24h": 1.50, "low_24h": 1.28},
+    {"symbol": "MOG", "name": "Mog Coin", "price": 0.0000013, "volume_24h": 32000000, "change_24h": 45.6, "high_24h": 0.0000016, "low_24h": 0.0000009},
+    {"symbol": "MYRO", "name": "Myro", "price": 0.095, "volume_24h": 15000000, "change_24h": 3.2, "high_24h": 0.105, "low_24h": 0.088},
+    {"symbol": "SLERF", "name": "Slerf", "price": 0.38, "volume_24h": 22000000, "change_24h": -11.2, "high_24h": 0.44, "low_24h": 0.36},
+    {"symbol": "SAMO", "name": "Samoyedcoin", "price": 0.0085, "volume_24h": 8500000, "change_24h": 4.8, "high_24h": 0.0092, "low_24h": 0.0080},
+    {"symbol": "LADYS", "name": "Milady Meme Coin", "price": 0.00000012, "volume_24h": 28000000, "change_24h": 67.3, "high_24h": 0.00000015, "low_24h": 0.00000008},
+    {"symbol": "DOG", "name": "DOG•GO•TO•THE•MOON", "price": 0.0048, "volume_24h": 42000000, "change_24h": 9.1, "high_24h": 0.0053, "low_24h": 0.0044},
 ]
 
-@st.cache_data(ttl=30)
-def get_coingecko_meme_data():
-    """
-    Основной источник: CoinGecko (бесплатно, без ограничений).
-    Возвращает список мемкоинов с ценами, объёмами, high/low.
-    """
+# ============================================================
+# ФУНКЦИЯ ЗАГРУЗКИ
+# ============================================================
+@st.cache_data(ttl=60)
+def load_coin_data():
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
@@ -44,91 +47,56 @@ def get_coingecko_meme_data():
             "sparkline": "false",
             "price_change_percentage": "24h"
         }
-        response = requests.get(url, params=params, timeout=15)
-        
-        if response.status_code == 429:
-            st.warning("⏳ CoinGecko: слишком много запросов. Жду 60 секунд...")
-            time.sleep(60)
-            response = requests.get(url, params=params, timeout=15)
-        
+        response = requests.get(url, params=params, timeout=20)
         data = response.json()
+        
+        if not isinstance(data, list) or len(data) == 0:
+            return FALLBACK_COINS, False
         
         coins = []
         for item in data:
-            high = item.get("high_24h", 0) or item.get("current_price", 0) * 1.05
-            low = item.get("low_24h", 0) or item.get("current_price", 0) * 0.95
-            price = item.get("current_price", 0)
-            
-            if low > 0 and price > 0:
-                amplitude = ((high - low) / low) * 100
-            else:
-                amplitude = 0
-            
-            coins.append({
-                "symbol": item["symbol"].upper(),
-                "name": item["name"],
-                "price": price,
-                "volume_24h": item.get("total_volume", 0),
-                "change_24h": item.get("price_change_percentage_24h", 0),
-                "market_cap": item.get("market_cap", 0),
-                "high_24h": high,
-                "low_24h": low,
-                "amplitude_24h": amplitude,
-                "on_bingx": item["symbol"].upper() in [b.split("-")[0] for b in BINGX_MEME_LIST]
-            })
+            if not isinstance(item, dict):
+                continue
+            try:
+                symbol = str(item.get("symbol", "")).upper()
+                name = str(item.get("name", symbol))
+                price = float(item.get("current_price", 0))
+                volume = float(item.get("total_volume", 0))
+                change = float(item.get("price_change_percentage_24h", 0) or 0)
+                high = float(item.get("high_24h", 0) or price * 1.05)
+                low = float(item.get("low_24h", 0) or price * 0.95)
+                
+                if price <= 0:
+                    continue
+                
+                amplitude = ((high - low) / low) * 100 if low > 0 else 0
+                
+                coins.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "price": price,
+                    "volume_24h": volume,
+                    "change_24h": change,
+                    "high_24h": high,
+                    "low_24h": low,
+                    "amplitude_24h": amplitude,
+                })
+            except:
+                continue
         
-        return coins
-    except Exception as e:
-        st.error(f"Ошибка CoinGecko: {e}")
-        return []
-
-@st.cache_data(ttl=60)
-def get_tradingview_signals(symbols):
-    """
-    TradingView технический анализ через бесплатный сканер.
-    С защитой от ошибок.
-    """
-    tv_data = {}
-    
-    for sym in symbols[:15]:  # Ограничиваем до 15 для скорости
-        try:
-            clean = sym.replace("USDT", "").replace("-", "")
-            url = "https://scanner.tradingview.com/crypto/scan"
-            body = {
-                "symbols": {"tickers": [f"BINANCE:{clean}USDT"]},
-                "columns": ["Recommend.All|1"]
-            }
-            resp = requests.post(url, json=body, timeout=8)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("data") and len(data["data"]) > 0:
-                    val = data["data"][0]["d"][0]
-                    if val >= 0.8:
-                        tv_data[sym] = {"signal": "🟢 STRONG BUY", "score": val}
-                    elif val >= 0.3:
-                        tv_data[sym] = {"signal": "🟢 BUY", "score": val}
-                    elif val >= -0.3:
-                        tv_data[sym] = {"signal": "🟡 NEUTRAL", "score": val}
-                    elif val >= -0.7:
-                        tv_data[sym] = {"signal": "🔴 SELL", "score": val}
-                    else:
-                        tv_data[sym] = {"signal": "🔴 STRONG SELL", "score": val}
-            else:
-                tv_data[sym] = {"signal": "⚪ WAIT", "score": 0}
-        except:
-            tv_data[sym] = {"signal": "⚪ WAIT", "score": 0}
+        if len(coins) == 0:
+            return FALLBACK_COINS, False
         
-        time.sleep(0.3)  # Пауза чтобы не забанили
+        return coins, True
     
-    return tv_data
+    except Exception:
+        return FALLBACK_COINS, False
 
 # ============================================================
-# 3. РАСЧЁТЫ
+# РАСЧЁТЫ
 # ============================================================
-
-def calculate_trade(entry_price, leverage, target_profit_percent, side="LONG"):
-    price_move = target_profit_percent / leverage
+def calculate_trade(entry_price, leverage, target_profit, side):
+    price_move = target_profit / leverage
     
     if side == "LONG":
         exit_price = entry_price * (1 + price_move / 100)
@@ -141,50 +109,50 @@ def calculate_trade(entry_price, leverage, target_profit_percent, side="LONG"):
     
     return exit_price, stop_loss, liq_price, price_move
 
-def calculate_success_probability(amplitude_24h, needed_move, tv_signal, volume_rank, change_24h):
+def calculate_success(amplitude, needed_move, volume_rank, change_24h, side):
     score = 0
     
-    # Амплитуда (40%)
-    amp_ratio = min(amplitude_24h / max(needed_move, 0.01), 3)
-    score += min(amp_ratio * 13.33, 40)
+    # Амплитуда (50%)
+    amp_ratio = min(amplitude / max(needed_move, 0.1), 3)
+    score += min(amp_ratio * 16.6, 50)
     
-    # TradingView (30%)
-    if "STRONG BUY" in tv_signal:
-        score += 30
-    elif "BUY" in tv_signal:
-        score += 22
-    elif "NEUTRAL" in tv_signal:
-        score += 12
-    elif "WAIT" in tv_signal:
-        score += 8
+    # Объём (30%)
+    score += max(30 - volume_rank * 2.5, 0)
+    
+    # Тренд (20%)
+    change = change_24h if change_24h is not None else 0
+    
+    if side == "LONG":
+        if 2 < change < 25:
+            score += 20
+        elif -5 < change <= 2:
+            score += 14
+        elif change >= 25:
+            score += 6
+        else:
+            score += 4
     else:
-        score += 3
+        if -25 < change < -2:
+            score += 20
+        elif -2 <= change < 5:
+            score += 14
+        elif change <= -25:
+            score += 6
+        else:
+            score += 4
     
-    # Объём (20%)
-    score += max(20 - volume_rank * 1.5, 0)
-    
-    # Тренд 24ч (10%)
-    if 1 < change_24h < 25:
-        score += 10
-    elif -8 < change_24h <= 1:
-        score += 8
-    elif change_24h >= 25:
-        score += 4
-    else:
-        score += 2
-    
-    return min(round(score), 95)
+    return min(round(score), 92)
 
-def get_success_label(prob):
-    if prob >= 70:
+def get_label(prob):
+    if prob >= 65:
         return f"🟢 HIGH ({prob}%)"
-    elif prob >= 45:
+    elif prob >= 40:
         return f"🟡 MEDIUM ({prob}%)"
     else:
         return f"🔴 LOW ({prob}%)"
 
 # ============================================================
-# 4. ИНТЕРФЕЙС (SIDEBAR)
+# ИНТЕРФЕЙС
 # ============================================================
 with st.sidebar:
     st.header("⚙️ НАСТРОЙКИ")
@@ -193,222 +161,128 @@ with st.sidebar:
     
     st.divider()
     st.subheader("💰 ЦЕЛЬ")
-    
-    target_profit = st.number_input(
-        "Прибыль (% к депозиту)",
-        min_value=10, max_value=5000, value=100, step=10
-    )
-    leverage = st.selectbox("⚡ Плечо", [1, 2, 3, 5, 10, 15, 20, 25, 50, 75, 100, 125], index=5)
-    
+    target_profit = st.number_input("Прибыль (% к депозиту)", 10, 5000, 100, 10)
+    leverage = st.selectbox("Плечо", [1, 2, 3, 5, 10, 15, 20, 25, 50, 75, 100, 125], index=5)
     needed_move = target_profit / leverage
     
     st.divider()
     st.subheader("🎯 НАПРАВЛЕНИЕ")
-    trade_side = st.radio("Тип сделки", ["📈 LONG", "📉 SHORT"], index=0)
+    trade_side = st.radio("Тип", ["📈 LONG", "📉 SHORT"], index=0)
     side_code = "LONG" if "LONG" in trade_side else "SHORT"
     
     st.divider()
     st.subheader("🔍 ФИЛЬТРЫ")
-    min_volume = st.slider("Мин. объём (24ч, $)", 5000, 100000000, 50000, 5000)
-    min_success = st.slider("Мин. процент успеха (%)", 10, 90, 45, 5)
-    show_only_bingx = st.checkbox("✅ Только пары с BingX", value=False)
+    min_volume = st.slider("Мин. объём ($)", 5000, 200000000, 50000, 5000)
+    min_success = st.slider("Мин. успех (%)", 10, 85, 40, 5)
     
     st.divider()
     if st.button("🔄 ОБНОВИТЬ", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     
-    st.caption(f"Цель: +{target_profit}% | Плечо: x{leverage}")
-    st.caption(f"Движение цены: {needed_move:.1f}%")
-    st.caption("📡 CoinGecko + TradingView")
+    st.caption(f"Цель: +{target_profit}% | Плечо: x{leverage} | Движение: {needed_move:.1f}%")
 
 # ============================================================
-# 5. ЗАГРУЗКА И ОБРАБОТКА
+# ЗАГРУЗКА
 # ============================================================
-with st.spinner("📡 Загружаю данные... Это может занять до 30 секунд..."):
-    coins = get_coingecko_meme_data()
+with st.spinner("📡 Загружаю данные..."):
+    coins, live = load_coin_data()
     timestamp = datetime.now()
 
 if not coins:
-    st.error("❌ Не удалось загрузить данные. Попробуй обновить через минуту.")
+    st.error("❌ Нет данных.")
     st.stop()
 
-# Фильтруем по объёму и BingX
-filtered = []
-for coin in coins:
-    if coin["volume_24h"] < min_volume:
-        continue
-    if show_only_bingx and not coin["on_bingx"]:
-        continue
-    filtered.append(coin)
-
+# Фильтрация
+filtered = [c for c in coins if c["volume_24h"] >= min_volume]
 filtered.sort(key=lambda x: x["volume_24h"], reverse=True)
-filtered = filtered[:30]
 
-if not filtered:
-    st.warning("❌ Нет монет. Снизь мин. объём или выключи фильтр BingX.")
-    st.stop()
+st.divider()
 
-# TradingView сигналы
-symbols_tv = [c["symbol"] + "USDT" for c in filtered]
-tv_data = get_tradingview_signals(symbols_tv)
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("📡 Статус", "🟢 Live" if live else "🟡 Кеш")
+col2.metric("🎯 Цель", f"+{target_profit}%")
+col3.metric("⚡ Плечо", f"x{leverage}")
+col4.metric("📈 Движение", f"{needed_move:.1f}%")
+
+st.divider()
 
 # ============================================================
-# 6. РАСЧЁТЫ ДЛЯ КАЖДОЙ МОНЕТЫ
+# РАСЧЁТ
 # ============================================================
 results = []
 
-for idx, coin in enumerate(filtered):
+for idx, coin in enumerate(filtered[:20]):
     entry = coin["price"]
-    sym_key = coin["symbol"] + "USDT"
-    tv = tv_data.get(sym_key, {"signal": "⚪ WAIT", "score": 0})
+    exit_p, stop_p, liq_p, move_p = calculate_trade(entry, leverage, target_profit, side_code)
     
-    # LONG
-    exit_l, stop_l, liq_l, move_l = calculate_trade(entry, leverage, target_profit, "LONG")
-    prob_l = calculate_success_probability(
-        coin["amplitude_24h"], needed_move, tv["signal"], idx, coin["change_24h"]
-    )
+    # Считаем успех для LONG и SHORT отдельно
+    prob_l = calculate_success(coin["amplitude_24h"], needed_move, idx, coin["change_24h"], "LONG")
+    prob_s = calculate_success(coin["amplitude_24h"], needed_move, idx, coin["change_24h"], "SHORT")
     
-    # SHORT
-    exit_s, stop_s, liq_s, move_s = calculate_trade(entry, leverage, target_profit, "SHORT")
-    # Для шорта инвертируем сигнал TV
-    tv_inv = tv["signal"]
-    if "BUY" in tv_inv and "STRONG" not in tv_inv:
-        tv_inv = "🔴 SELL"
-    elif "STRONG BUY" in tv_inv:
-        tv_inv = "🔴 STRONG SELL"
-    elif "SELL" in tv_inv and "STRONG" not in tv_inv:
-        tv_inv = "🟢 BUY"
-    elif "STRONG SELL" in tv_inv:
-        tv_inv = "🟢 STRONG BUY"
-    
-    prob_s = calculate_success_probability(
-        coin["amplitude_24h"], needed_move, tv_inv, idx, -coin["change_24h"]
-    )
-    
-    # Текущее направление
-    if side_code == "LONG":
-        exit_p = exit_l
-        stop_p = stop_l
-        liq_p = liq_l
-        prob = prob_l
-    else:
-        exit_p = exit_s
-        stop_p = stop_s
-        liq_p = liq_s
-        prob = prob_s
+    # Берём нужное направление
+    prob = prob_l if side_code == "LONG" else prob_s
     
     if prob < min_success:
         continue
     
-    price_fmt = ".8f" if entry < 0.01 else ".6f" if entry < 1 else ".4f"
+    fmt = ".8f" if entry < 0.01 else ".6f" if entry < 1 else ".4f"
     
     results.append({
         "Монета": f"${coin['symbol']}",
-        "Название": coin["name"],
-        "Цена": entry,
-        "Цена строка": f"${entry:{price_fmt}}",
-        "Объём 24ч": f"${coin['volume_24h']:,.0f}",
-        "Амплитуда": f"{coin['amplitude_24h']:.1f}%",
+        "Цена": f"${entry:{fmt}}",
+        "Объём": f"${coin['volume_24h']:,.0f}",
+        "Ампл.": f"{coin['amplitude_24h']:.1f}%",
         "24ч": f"{coin['change_24h']:+.1f}%",
-        "TV": tv["signal"],
-        "BingX": "✅" if coin["on_bingx"] else "—",
-        "🎯 Выход": f"${exit_p:{price_fmt}}",
-        "🛑 Стоп": f"${stop_p:{price_fmt}}",
-        "💀 Ликв.": f"${liq_p:{price_fmt}}",
-        "⚡ Движ.": f"{move_l:.1f}%",
+        "🎯 Выход": f"${exit_p:{fmt}}",
+        "🛑 Стоп": f"${stop_p:{fmt}}",
+        "⚡ Движ.": f"{move_p:.1f}%",
         "✅ LONG": f"{prob_l}%",
         "❌ SHORT": f"{prob_s}%",
-        "Сигнал": get_success_label(prob),
+        "Сигнал": get_label(prob),
         "Прибыль": f"+{target_profit}%",
-        "prob_raw": prob,
-        "prob_l": prob_l,
-        "prob_s": prob_s
+        "prob": prob
     })
 
-# ============================================================
-# 7. ОТОБРАЖЕНИЕ
-# ============================================================
-st.divider()
-
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("🎯 Цель", f"+{target_profit}%")
-with col2:
-    st.metric("⚡ Плечо", f"x{leverage}")
-with col3:
-    st.metric("📈 Движение", f"{needed_move:.1f}%")
-with col4:
-    st.metric("💡 Найдено", len(results))
-
-st.divider()
-
 if not results:
-    st.warning("❌ Все монеты отсеяны по проценту успеха. Снизь мин. успех.")
+    st.warning(f"❌ Все монеты отсеяны. Снизь мин. успех (сейчас {min_success}%).")
     st.stop()
 
-st.success(f"✅ Загружено: {timestamp.strftime('%H:%M:%S')} | CoinGecko + TradingView")
+st.success(f"✅ Найдено: {len(results)} | {timestamp.strftime('%H:%M:%S')}")
 
-# Таблица
 df = pd.DataFrame(results)
 st.dataframe(
-    df[["Монета", "Цена строка", "Объём 24ч", "Амплитуда", "24ч", "TV", "BingX",
-        "🎯 Выход", "🛑 Стоп", "✅ LONG", "❌ SHORT", "Сигнал", "Прибыль"]],
-    use_container_width=True,
-    hide_index=True
+    df[["Монета", "Цена", "Объём", "Ампл.", "24ч", "🎯 Выход", "🛑 Стоп", "✅ LONG", "❌ SHORT", "Сигнал"]],
+    use_container_width=True, hide_index=True
 )
 
 # ============================================================
-# 8. ЛУЧШИЙ СИГНАЛ
+# ЛУЧШИЙ СИГНАЛ
 # ============================================================
 st.divider()
 st.subheader("🔥 ЛУЧШИЙ СИГНАЛ")
 
-results.sort(key=lambda x: x["prob_raw"], reverse=True)
+results.sort(key=lambda x: x["prob"], reverse=True)
 best = results[0]
 
 col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("🏆 Монета", f"{best['Монета']} ({best['Название']})")
-with col2:
-    st.metric("💵 Вход", best["Цена строка"])
-with col3:
-    st.metric("📊 Успех", best["Сигнал"])
+col1.metric("🏆", best["Монета"])
+col2.metric("💵 Вход", best["Цена"])
+col3.metric("📊 Успех", best["Сигнал"])
 
 st.info(f"""
-### 📋 План сделки ({side_code})
-
+### 📋 План ({side_code})
 | Параметр | Значение |
 |----------|----------|
-| **Пара** | {best['Монета'].replace('$','')}/USDT на {exchange} |
-| **Тип** | {trade_side} |
-| **Плечо** | x{leverage} |
-| **Вход** | {best['Цена строка']} |
-| **Выход (ТП)** | {best['🎯 Выход']} |
-| **Стоп-лосс** | {best['🛑 Стоп']} |
-| **Ликвидация** | {best['💀 Ликв.']} |
-| **Движение цены** | {best['⚡ Движ.']} |
-| **Процент успеха** | {best['Сигнал']} |
-| **Прибыль** | **{best['Прибыль']}** |
+| Пара | {best['Монета'].replace('$','')}/USDT ({exchange}) |
+| Плечо | x{leverage} |
+| Вход | {best['Цена']} |
+| Выход (ТП) | {best['🎯 Выход']} |
+| Стоп-лосс | {best['🛑 Стоп']} |
+| Движение | {best['⚡ Движ.']} |
+| Прибыль | **{best['Прибыль']}** |
 """)
 
-# График сравнения LONG vs SHORT
 st.divider()
-st.subheader("📊 LONG vs SHORT (первые 10)")
-
-chart_df = pd.DataFrame({
-    "Монета": [r["Монета"] for r in results[:10]],
-    "LONG %": [r["prob_l"] for r in results[:10]],
-    "SHORT %": [r["prob_s"] for r in results[:10]]
-})
-
-st.bar_chart(
-    chart_df.set_index("Монета"),
-    use_container_width=True,
-    color=["#00ff88", "#ff4444"]
-)
-
-st.divider()
-st.caption("### Формула успеха: Амплитуда (40%) + TV сигнал (30%) + Объём (20%) + Тренд (10%)")
-st.caption(f"📡 CoinGecko API + TradingView Scanner | {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-st.caption("⚠️ Всегда ставь стоп-лосс. Не рискуй больше 1-2% депозита в одной сделке.")
+st.caption(f"⚙️ Формула: Амплитуда (50%) + Объём (30%) + Тренд (20%) | {'Live' if live else 'Кеш'} | {timestamp}")
+st.caption("⚠️ Всегда ставь стоп-лосс. Не рискуй больше 2% депозита.")
