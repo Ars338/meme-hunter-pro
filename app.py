@@ -3,26 +3,21 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import time
 
 st.set_page_config(page_title="BingX Hunter Pro", page_icon="🎯", layout="wide")
 
 st.title("🎯 BingX Hunter Pro")
-st.subheader("Поиск мемкоинов с реальными данными и точным расчётом входа/выхода")
+st.subheader("Поиск мемкоинов с проверкой реалистичности движения")
 
-# ---------- Функция для загрузки реальных данных с CoinGecko ----------
-@st.cache_data(ttl=30)  # Кешируем на 30 секунд
+# ---------- Загрузка данных с CoinGecko ----------
+@st.cache_data(ttl=30)
 def fetch_real_meme_coins():
-    """
-    Загружает реальные мемкоины с CoinGecko API.
-    Бесплатно, без ключа.
-    """
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
-        "category": "meme-token",  # Только мемкоины
-        "order": "volume_desc",     # Сортируем по объёму
-        "per_page": 100,            # 100 монет
+        "category": "meme-token",
+        "order": "volume_desc",
+        "per_page": 100,
         "page": 1,
         "sparkline": "false",
         "price_change_percentage": "24h"
@@ -34,6 +29,16 @@ def fetch_real_meme_coins():
         
         coins = []
         for item in data:
+            # Проверяем, что все нужные поля есть
+            high = item.get("high_24h", 0)
+            low = item.get("low_24h", 0)
+            
+            # Считаем амплитуду (реальный размах движения за 24ч)
+            if high and low and low > 0:
+                amplitude = ((high - low) / low) * 100
+            else:
+                amplitude = 0
+            
             coins.append({
                 "symbol": item["symbol"].upper(),
                 "name": item["name"],
@@ -41,8 +46,9 @@ def fetch_real_meme_coins():
                 "volume_24h": item["total_volume"],
                 "change_24h": item.get("price_change_percentage_24h", 0),
                 "market_cap": item["market_cap"],
-                "high_24h": item["high_24h"],
-                "low_24h": item["low_24h"]
+                "high_24h": high,
+                "low_24h": low,
+                "amplitude_24h": amplitude  # На сколько % двигалась за 24ч
             })
         
         return coins
@@ -50,46 +56,33 @@ def fetch_real_meme_coins():
         st.error(f"Ошибка загрузки CoinGecko: {e}")
         return []
 
-# ---------- Функция для поиска мемкоинов на BingX ----------
-@st.cache_data(ttl=30)
-def fetch_bingx_meme_list():
-    """
-    Пытается получить список мемкоинов, доступных на BingX.
-    Если не получается - используем весь список с CoinGecko.
-    """
-    try:
-        # Пробуем API BingX для получения списка торговых пар
-        url = "https://open-api.bingx.com/openApi/spot/v1/common/symbols"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        
-        if data.get("code") == 0:
-            symbols = data.get("data", {}).get("symbols", [])
-            # Фильтруем только USDT пары
-            bingx_coins = [s["symbol"].replace("-USDT", "").upper() for s in symbols if "USDT" in s["symbol"]]
-            return bingx_coins
-    except:
-        pass
-    
-    # Если BingX API недоступен - возвращаем None (будем показывать все)
-    return None
-
-# ---------- Функция расчёта ----------
+# ---------- Расчёт ----------
 def calculate_trade(entry_price, leverage, target_profit_percent):
-    """
-    Считает цену выхода и стоп-лосс.
-    """
     price_move_percent = target_profit_percent / leverage
     exit_price_long = entry_price * (1 + price_move_percent / 100)
     exit_price_short = entry_price * (1 - price_move_percent / 100)
     
-    # Стоп-лосс: 50% от целевого профита
     stop_loss_percent = target_profit_percent * 0.5
     stop_move = stop_loss_percent / leverage
     stop_price_long = entry_price * (1 - stop_move / 100)
     stop_price_short = entry_price * (1 + stop_move / 100)
     
     return exit_price_long, exit_price_short, price_move_percent, stop_price_long, stop_price_short
+
+def get_chance_level(amplitude, needed_move):
+    """
+    Оценивает шанс, что монета сделает нужное движение.
+    Если амплитуда за 24ч >= нужного движения — HIGH.
+    """
+    if amplitude <= 0:
+        return "⚪ N/A", 0
+    ratio = amplitude / needed_move
+    if ratio >= 1.5:
+        return "🟢 HIGH", ratio
+    elif ratio >= 0.8:
+        return "🟡 MEDIUM", ratio
+    else:
+        return "🔴 LOW", ratio
 
 # ---------- Боковая панель ----------
 with st.sidebar:
@@ -118,21 +111,35 @@ with st.sidebar:
         index=5
     )
     
+    # Нужное движение цены
+    needed_move = target_profit / leverage
+    
     st.divider()
-    st.subheader("🔍 Фильтры")
+    st.subheader("🔍 Фильтры реалистичности")
     
     min_volume = st.slider(
         "Мин. объём торгов (24ч, $)",
-        10000, 5000000, 100000, 10000
+        10000, 5000000, 50000, 10000
     )
     
     max_change = st.slider(
         "Макс. изменение за 24ч (%)",
         0, 2000, 500, 50,
-        help="Отсеивает монеты, которые уже сделали слишком большой рост"
+        help="Отсеивает монеты, которые уже улетели"
     )
     
-    show_bingx_only = st.checkbox("Только монеты с BingX", value=True, help="Показывает монеты, которые точно есть на BingX")
+    # НОВЫЙ ФИЛЬТР: минимальная амплитуда
+    min_amplitude = st.slider(
+        "Мин. амплитуда за 24ч (%)",
+        0, 100, int(needed_move * 0.7), 1,
+        help=f"Показывает монеты, которые ходили минимум на это значение. Для твоей цели ({needed_move:.1f}%) рекомендую ≥ {needed_move:.1f}%"
+    )
+    
+    only_realistic = st.checkbox(
+        "✅ Только реалистичные (шанс HIGH/MEDIUM)",
+        value=True,
+        help="Скрывает монеты, которые не дадут нужное движение"
+    )
     
     st.divider()
     
@@ -141,112 +148,128 @@ with st.sidebar:
         st.rerun()
     
     st.caption(f"🎯 Цель: +{target_profit}% | Плечо: x{leverage}")
-    st.caption(f"💡 Нужное движение цены: {target_profit / leverage:.1f}%")
+    st.caption(f"📈 Нужное движение цены: {needed_move:.1f}%")
     st.caption("📡 Данные: CoinGecko API")
 
 # ---------- Основной экран ----------
 st.divider()
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("🎯 Целевая прибыль", f"+{target_profit}% к депозиту")
+    st.metric("🎯 Цель", f"+{target_profit}% к депозиту")
 with col2:
     st.metric("⚡ Плечо", f"x{leverage}")
 with col3:
-    move_needed = target_profit / leverage
-    st.metric("📈 Нужное движение цены", f"{move_needed:.1f}%")
+    st.metric("📈 Нужное движение", f"{needed_move:.1f}%")
+with col4:
+    st.metric("📐 Мин. амплитуда", f"{min_amplitude:.1f}%")
 
 st.divider()
 
-# Загружаем данные
+# Загружаем
 with st.spinner("📡 Загружаю реальные данные с CoinGecko..."):
     all_coins = fetch_real_meme_coins()
-    bingx_list = fetch_bingx_meme_list() if show_bingx_only else None
     timestamp = datetime.now()
 
 if not all_coins:
     st.error("Не удалось загрузить данные. Попробуй обновить.")
     st.stop()
 
-# Фильтруем
+# Фильтруем с проверкой амплитуды
 filtered = []
+dropped_low_amplitude = 0
+
 for coin in all_coins:
     volume_ok = coin["volume_24h"] and coin["volume_24h"] >= min_volume
     change_ok = abs(coin["change_24h"]) <= max_change if coin["change_24h"] else True
-    bingx_ok = (bingx_list is None) or (coin["symbol"] in bingx_list)
     price_ok = coin["price"] and coin["price"] > 0
+    amplitude_ok = coin["amplitude_24h"] >= min_amplitude
     
-    if volume_ok and change_ok and bingx_ok and price_ok:
+    if not amplitude_ok:
+        dropped_low_amplitude += 1
+    
+    if volume_ok and change_ok and price_ok and amplitude_ok:
         filtered.append(coin)
 
-# Сортируем по объёму
-filtered.sort(key=lambda x: x["volume_24h"] or 0, reverse=True)
-filtered = filtered[:30]  # Топ-30
+# Сортируем: сначала с лучшим шансом
+filtered.sort(key=lambda x: x["amplitude_24h"], reverse=True)
+filtered = filtered[:30]
 
 if not filtered:
-    st.warning("Монет с такими фильтрами не найдено. Увеличь макс. изменение или снизь мин. объём.")
+    st.warning(f"""
+    ❌ Нет монет с такими параметрами.
+    Причина: {dropped_low_amplitude} монет отсеяны по амплитуде (< {min_amplitude}%).
+    Попробуй: снизить мин. амплитуду или убрать галочку "Только реалистичные".
+    """)
     st.stop()
 
-st.success(f"✅ Найдено {len(filtered)} монет | Обновлено: {timestamp.strftime('%H:%M:%S')}")
+st.success(f"✅ Найдено {len(filtered)} монет | Отсеяно по амплитуде: {dropped_low_amplitude} | Обновлено: {timestamp.strftime('%H:%M:%S')}")
 
-# Таблица с расчётами
+# Таблица с шансами
 results = []
 for coin in filtered:
     entry = coin["price"]
-    exit_long, exit_short, move_pct, stop_long, stop_short = calculate_trade(entry, leverage, target_profit)
+    exit_long, _, move_pct, stop_long, _ = calculate_trade(entry, leverage, target_profit)
+    chance_label, ratio = get_chance_level(coin["amplitude_24h"], needed_move)
+    
+    # Фильтр "только реалистичные"
+    if only_realistic and chance_label == "🔴 LOW":
+        continue
     
     results.append({
         "Монета": f"${coin['symbol']}",
-        "Название": coin["name"],
-        "Цена сейчас": f"${entry:.8f}" if entry < 0.01 else f"${entry:.6f}" if entry < 1 else f"${entry:.4f}",
+        "Цена сейчас": f"${entry:.6f}" if entry < 1 else f"${entry:.4f}",
         "Объём 24ч": f"${coin['volume_24h']:,.0f}",
+        "Амплитуда 24ч": f"{coin['amplitude_24h']:.1f}%",
         "Изменение 24ч": f"{coin['change_24h']:+.1f}%",
-        "🎯 Выход ЛОНГ": f"${exit_long:.8f}" if exit_long < 0.01 else f"${exit_long:.6f}",
-        "🛑 Стоп ЛОНГ": f"${stop_long:.8f}" if stop_long < 0.01 else f"${stop_long:.6f}",
-        "📊 Движение": f"{move_pct:.1f}%",
-        "💰 Прибыль": f"+{target_profit}%"
+        "🎯 Цена выхода": f"${exit_long:.6f}" if exit_long < 1 else f"${exit_long:.4f}",
+        "🛑 Стоп-лосс": f"${stop_long:.6f}" if stop_long < 1 else f"${stop_long:.4f}",
+        "Нужное движение": f"{move_pct:.1f}%",
+        "ШАНС": chance_label,
+        "Прибыль": f"+{target_profit}%"
     })
+
+if not results:
+    st.warning("Все найденные монеты имеют низкий шанс. Сними галочку 'Только реалистичные' или уменьши амплитуду.")
+    st.stop()
 
 df = pd.DataFrame(results)
 
-# Стилизуем таблицу
+# Показываем таблицу с цветами
 st.dataframe(
     df,
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Монета": st.column_config.TextColumn(width="small"),
-        "🎯 Выход ЛОНГ": st.column_config.TextColumn(width="small"),
-        "💰 Прибыль": st.column_config.TextColumn(width="small"),
+        "ШАНС": st.column_config.TextColumn(width="small"),
+        "Амплитуда 24ч": st.column_config.TextColumn(width="small"),
+        "Прибыль": st.column_config.TextColumn(width="small"),
     }
 )
 
-# Лучшая монета (с наилучшим соотношением объём/изменение)
+# Лучшая монета (с наивысшим шансом)
 st.divider()
-st.subheader("🔥 ЛУЧШАЯ МОНЕТА ПОД ТВОЮ ЦЕЛЬ")
+st.subheader("🔥 ЛУЧШАЯ МОНЕТА С РЕАЛЬНЫМ ШАНСОМ")
 
-# Ищем монету с хорошим объёмом и умеренным изменением (не перегрета)
-best_coin = None
+# Берём монету с максимальной амплитудой
+best_coin = filtered[0]
 for coin in filtered:
-    if coin["change_24h"] and abs(coin["change_24h"]) < 50 and coin["volume_24h"] > min_volume * 2:
+    if coin["amplitude_24h"] > best_coin["amplitude_24h"]:
         best_coin = coin
-        break
-
-if not best_coin:
-    best_coin = filtered[0]  # Если нет идеальной - берём первую
 
 entry_best = best_coin["price"]
 exit_best, _, move_best, stop_best, _ = calculate_trade(entry_best, leverage, target_profit)
+chance_best, ratio_best = get_chance_level(best_coin["amplitude_24h"], needed_move)
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("🏆 Монета", f"${best_coin['symbol']} ({best_coin['name']})")
 with col2:
-    st.metric("💵 Цена входа", f"${entry_best:.8f}" if entry_best < 0.01 else f"${entry_best:.6f}")
+    st.metric("💵 Цена входа", f"${entry_best:.6f}" if entry_best < 1 else f"${entry_best:.4f}")
 with col3:
-    st.metric("🎯 Цена выхода", f"${exit_best:.8f}" if exit_best < 0.01 else f"${exit_best:.6f}")
+    st.metric("🎯 Цена выхода", f"${exit_best:.6f}" if exit_best < 1 else f"${exit_best:.4f}")
 with col4:
-    st.metric("📈 Твоя прибыль", f"+{target_profit}% к депозиту")
+    st.metric("🎲 Шанс", chance_best)
 
 st.info(f"""
 📋 **План сделки на {exchange}:**
@@ -256,31 +279,40 @@ st.info(f"""
 | Пара | {best_coin['symbol']}/USDT |
 | Плечо | x{leverage} |
 | Цена входа | ${entry_best:.8f} |
-| Цена выхода (тейк-профит) | ${exit_best:.8f} |
+| Цена выхода (ТП) | ${exit_best:.8f} |
 | Цена стоп-лосса | ${stop_best:.8f} |
-| Движение цены для цели | {move_best:.1f}% |
+| Движение для цели | {move_best:.1f}% |
+| **Амплитуда за 24ч** | **{best_coin['amplitude_24h']:.1f}%** (запас x{ratio_best:.1f}) |
+| Шанс реализовать | {chance_best} |
 | Прибыль к депозиту | +{target_profit}% |
 | Убыток при стопе | -{target_profit * 0.5:.0f}% к депозиту |
 """)
 
-# График волатильности
+# Статистика по шансам
 st.divider()
-st.subheader("📊 Волатильность найденных монет")
+st.subheader("📊 Распределение шансов")
 
-chart_data = pd.DataFrame({
-    "Монета": [f"${c['symbol']}" for c in filtered[:10]],
-    "Изменение за 24ч (%)": [c["change_24h"] for c in filtered[:10]],
-    "Объём (млн $)": [c["volume_24h"] / 1_000_000 for c in filtered[:10]]
-})
+high_count = sum(1 for _, _, chance, _, _ in [() for _ in results] if "HIGH" in str(results))
+real_results = []
+for coin in filtered:
+    chance_label, _ = get_chance_level(coin["amplitude_24h"], needed_move)
+    real_results.append(chance_label)
 
-col_chart1, col_chart2 = st.columns(2)
-with col_chart1:
-    st.bar_chart(chart_data.set_index("Монета")["Изменение за 24ч (%)"], use_container_width=True)
-with col_chart2:
-    st.bar_chart(chart_data.set_index("Монета")["Объём (млн $)"], use_container_width=True)
+high_count = real_results.count("🟢 HIGH")
+medium_count = real_results.count("🟡 MEDIUM")
+low_count = real_results.count("🔴 LOW")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("🟢 HIGH (уверенно)", high_count)
+with col2:
+    st.metric("🟡 MEDIUM (на грани)", medium_count)
+with col3:
+    st.metric("🔴 LOW (маловероятно)", low_count)
 
 # Подвал
 st.divider()
-st.caption(f"📡 Данные: CoinGecko API (реальные) | Обновлено: {timestamp.strftime('%H:%M:%S')} | Обновится через 30 сек")
-st.caption(f"🎯 Цель: +{target_profit}% к депозиту | Плечо: x{leverage} | Нужное движение цены: {target_profit / leverage:.1f}%")
-st.caption("⚠️ Только для анализа. Не финансовая рекомендация.")
+st.caption(f"📡 Данные: CoinGecko API | Обновлено: {timestamp.strftime('%H:%M:%S')}")
+st.caption(f"🎯 Цель: +{target_profit}% | Плечо: x{leverage} | Нужное движение: {needed_move:.1f}%")
+st.caption(f"📐 Мин. амплитуда: {min_amplitude:.1f}% | Монет с низкой амплитудой отсеяно: {dropped_low_amplitude}")
+st.caption("⚠️ Шанс основан на 24ч амплитуде. Не гарантия. Всегда ставь стоп-лосс.")
